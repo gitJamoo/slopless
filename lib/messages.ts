@@ -1,18 +1,14 @@
 import { browser } from 'wxt/browser';
-import type { Verdict } from './text';
 import type { DailyStats, Settings } from './settings';
-
-export type Source = 'local' | 'pangram';
+import type { Verdict } from './text';
 
 export interface Score {
   score: number;
   verdict: Verdict;
-  source: Source;
-  /** Short human label, e.g. "AI-generated" or Pangram's prediction_short. */
   label: string;
   ms: number;
   cached?: boolean;
-  /** Local model bucket probabilities (human, light edit, heavy edit, AI). */
+  /** Class probabilities from the model, e.g. [human, ai] or [human, ai-edited, ai]. */
   probs?: number[];
 }
 
@@ -21,30 +17,32 @@ export type Result<T> = ({ ok: true } & T) | { ok: false; error: string };
 export interface EngineStatus {
   loaded: boolean;
   modelPresent: boolean;
-  /** Benchmark-only stand-in (untrained head): scores are meaningless. */
+  /** Benchmark-only stand-in (untrained head): verdicts are meaningless. */
   standIn?: boolean;
-  device?: string;
-  dtype?: string;
+  modelName?: string;
+  modelMB?: number;
   loadMs?: number;
   avgMs?: number;
   runs: number;
-  crossOriginIsolated: boolean;
   threads?: number;
   error?: string;
 }
 
 export type BgRequest =
   | { type: 'score'; text: string }
-  | { type: 'rewrite'; text: string }
   | { type: 'status' }
   | { type: 'test'; text: string }
   | { type: 'benchmark'; runs: number; words: number };
 
 export type EngineRequest =
   | { target: 'engine'; type: 'detect'; texts: string[]; maxTokens: number }
-  | { target: 'engine'; type: 'rewrite'; text: string }
   | { target: 'engine'; type: 'status' }
   | { target: 'engine'; type: 'benchmark'; runs: number; words: number; maxTokens: number };
+
+/** Sent by the engine itself when it has been idle long enough to be shut down. */
+export interface EngineIdle {
+  type: 'engine-idle';
+}
 
 export interface StatusResponse {
   settings: Settings;
@@ -53,8 +51,6 @@ export interface StatusResponse {
 }
 
 export interface BenchResponse {
-  device: string;
-  dtype: string;
   loadMs: number;
   tokens: number;
   runs: number;
@@ -73,6 +69,6 @@ export function listen(handler: (msg: any) => Promise<unknown> | undefined) {
   });
 }
 
-export function send<T = any>(msg: BgRequest | EngineRequest): Promise<T> {
+export function send<T = any>(msg: BgRequest | EngineRequest | EngineIdle): Promise<T> {
   return browser.runtime.sendMessage(msg) as Promise<T>;
 }

@@ -33,7 +33,17 @@
         ['sam', '@samtheplumber', `pro tip from someone who does this for a living: if your toilet runs every 20 min on its own its almost always the flapper. $6 part. take a picture of the old one before you go to the hardware store because there are like 4 kinds and the guy at the counter will not know which one you need.`],
         ['Future Ready', '@future_ready', `Unlocking your potential starts with a single decision: to show up every day as the best version of yourself. In a world full of distractions, focus is a superpower. Prioritize what truly matters, set clear boundaries, and invest in habits that compound over time. Small, consistent actions lead to extraordinary results. Remember, it's not about perfection — it's about progress. Keep pushing forward, stay curious, and never underestimate the power of a growth mindset.`],
       ];
+      // A reply-bot: each reply is too short to judge alone, but together they give the account away.
+      const replies = [
+        'Great insight! This is exactly what more people need to hear right now 🙌',
+        'Absolutely love this perspective. Thanks for sharing such valuable thoughts!',
+        'This is so important. More people need to understand this. 💯',
+        'Such a powerful reminder. Consistency truly is the key to success!',
+        'Couldn\'t agree more! This really resonates with me on so many levels.',
+        'What an inspiring take! Thank you for always sharing such great content.',
+      ];
       const feed = document.getElementById('feed');
+      let botIndex = 0;
       // Repeat the set so there's something to scroll through.
       for (let r = 0; r < 3; r++) {
         for (const [name, handle, text] of posts) {
@@ -43,6 +53,15 @@
           a.querySelector('.who').append(name + ' ', Object.assign(document.createElement('span'), { className: 'handle', textContent: handle }));
           a.querySelector('.demo-text').textContent = r ? text + ` (#${r + 1})` : text;
           feed.append(a);
+          const reply = replies[botIndex++ % replies.length];
+          {
+            const b = document.createElement('article');
+            b.setAttribute('data-slopless-demo-post', '');
+            b.innerHTML = `<div class="who"></div><div class="demo-text"></div>`;
+            b.querySelector('.who').append('Engage Daily ', Object.assign(document.createElement('span'), { className: 'handle', textContent: '@engage_daily' }));
+            b.querySelector('.demo-text').textContent = reply;
+            feed.append(b);
+          }
         }
       }
     </script>

@@ -1,0 +1,15 @@
+# Install torch separately with the right CUDA build: https://pytorch.org/get-started/locally/
+transformers>=4.57
+datasets>=3.0
+accelerate>=1.0
+scikit-learn
+pandas
+pyarrow
+pyyaml
+datasketch      # MinHash near-dup removal
+langid          # English filter
+httpx           # async generation client (OpenAI-compatible endpoints)
+matplotlib
+onnx
+onnxruntime
+onnxscript

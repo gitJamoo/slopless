@@ -2,16 +2,19 @@ import './style.css';
 import { adapterFor } from '@/lib/adapters';
 import { send, type Result, type Score } from '@/lib/messages';
 import { getSettings, onSettingsChanged, type Settings } from '@/lib/settings';
-import { countWords, normalizePostText } from '@/lib/text';
+import { accountVerdict, countWords, normalizePostText } from '@/lib/text';
+
+/** Posts this short are too thin to judge alone, but still count toward their author's verdict. */
+const ACCOUNT_MIN_WORDS = 5;
 
 interface PostState {
   text: string;
   textEl: HTMLElement;
+  author: string | null;
+  /** Long enough to get its own badge (≥ minWords). */
+  ownVerdict: boolean;
   result?: Score;
   error?: string;
-  rewritten?: string;
-  rewriting?: boolean;
-  showOriginal?: boolean;
 }
 
 export default defineContentScript({
@@ -31,16 +34,18 @@ export default defineContentScript({
 
     let settings: Settings = await getSettings();
     const states = new Map<Element, PostState>();
+    // Session-only, in-memory: author -> (post text -> score). Never persisted.
+    const accounts = new Map<string, Map<string, number>>();
     const active = () => settings.mode !== 'off' && settings.sites[adapter.id];
 
-    // ---- discover posts; only score ones near the viewport (feeds pre-render ahead of you) ----
+    // ---- discover posts; score only those near the viewport (feeds render ahead of you) ----
     const io = new IntersectionObserver(
       (entries) => entries.forEach((e) => e.isIntersecting && consider(e.target)),
-      { rootMargin: '1500px 0px 1500px 0px' },
+      { rootMargin: '1200px 0px 1200px 0px' },
     );
     const seen = new WeakSet<Element>();
-    const scan = (root: ParentNode) => {
-      root.querySelectorAll(adapter.post).forEach((p) => {
+    const scan = () => {
+      document.querySelectorAll(adapter.post).forEach((p) => {
         if (seen.has(p)) return consider(p); // re-check: virtualised feeds recycle nodes
         seen.add(p);
         io.observe(p);
@@ -48,43 +53,58 @@ export default defineContentScript({
     };
     let scanQueued = false;
     const mo = new MutationObserver(() => {
-      if (scanQueued) return;
+      if (scanQueued || document.hidden) return;
       scanQueued = true;
       requestAnimationFrame(() => {
         scanQueued = false;
-        if (active()) scan(document);
+        if (active()) scan();
       });
     });
 
     function consider(post: Element) {
-      if (!active()) return;
+      if (!active() || document.hidden) return;
       const textEl = adapter!.text(post);
       if (!textEl) return;
       const text = normalizePostText(textEl.innerText ?? '');
       const prev = states.get(post);
       if (prev && prev.text === text && prev.textEl === textEl) return;
       if (prev) clearUi(post, prev);
-      if (countWords(text) < settings.minWords) {
+      const words = countWords(text);
+      const author = adapter!.author?.(post) ?? null;
+      const ownVerdict = words >= settings.minWords;
+      const forAccount = settings.accountVerdicts && !!author && words >= ACCOUNT_MIN_WORDS;
+      if (!ownVerdict && !forAccount) {
         states.delete(post);
         return;
       }
-      const st: PostState = { text, textEl };
+      const st: PostState = { text, textEl, author, ownVerdict };
       states.set(post, st);
-      if (settings.blurWhileChecking) textEl.classList.add('slopless-pending');
-      // Fail open: never leave a post blurred if scoring stalls.
+      if (ownVerdict && settings.blurWhileChecking) textEl.classList.add('slopless-pending');
       const failOpen = setTimeout(() => textEl.classList.remove('slopless-pending'), 10_000);
       send<Result<Score>>({ type: 'score', text }).then((r) => {
         clearTimeout(failOpen);
         if (states.get(post) !== st) return;
         if (r?.ok) st.result = r;
         else st.error = r?.error ?? 'Unknown error';
-        render(post, st);
+        if (st.result && author) recordAccount(author, text, st.result.score);
+        else render(post, st);
       });
+    }
+
+    function recordAccount(author: string, text: string, score: number) {
+      let m = accounts.get(author);
+      if (!m) accounts.set(author, (m = new Map()));
+      const before = accountVerdict([...m.values()], settings.threshold);
+      m.set(text, score);
+      const after = accountVerdict([...m.values()], settings.threshold);
+      // Account verdict exists or just changed: re-render all their posts (keeps counts current).
+      const all = !!before || !!after;
+      for (const [p, s] of states) if (s.author === author && (all || s.text === text)) render(p, s);
     }
 
     // ---- UI ----
     function clearUi(post: Element, st: PostState) {
-      post.querySelectorAll(':scope .slopless-ui').forEach((n) => n.remove());
+      post.querySelectorAll('.slopless-ui').forEach((n) => n.parentNode?.removeChild(n));
       post.removeAttribute('data-slopless-hidden');
       st.textEl.classList.remove('slopless-pending', 'slopless-replaced');
     }
@@ -96,51 +116,56 @@ export default defineContentScript({
       return n;
     }
 
-    function badge(st: PostState) {
-      const r = st.result!;
-      const pct = Math.round(r.score * 100);
-      const b = el('span', `slopless-badge slopless-${r.verdict}`, `${r.verdict === 'human' ? '✓' : '⚠'} ${r.label} · ${pct}%`);
-      b.title = `Slopless: ${r.label} (${pct}% AI) via ${r.source === 'local' ? 'on-device Open Pangram' : 'Pangram API'}` +
-        `${r.cached ? ', cached' : `, ${r.ms} ms`}`;
-      return b;
-    }
-
     function render(post: Element, st: PostState) {
       clearUi(post, st);
       if (!active()) return;
       const { textEl } = st;
+
       if (st.error) {
-        if (st.error.includes('not installed') || st.error.includes('API key')) {
-          const b = el('span', 'slopless-badge slopless-error', '⚠ Slopless needs setup');
+        if (st.ownVerdict) {
+          const b = el('span', 'slopless-badge slopless-error', '⚠ Slopless: no model');
           b.title = st.error;
           textEl.before(b);
         }
         return;
       }
-      const r = st.result!;
-      const isAi = r.verdict === 'ai';
+      if (!st.result) return;
 
-      if (settings.mode === 'flag' || !isAi) {
-        if (r.verdict !== 'human') textEl.before(badge(st));
-        return;
+      const r = st.result;
+      const acct = st.author && settings.accountVerdicts
+        ? accountVerdict([...(accounts.get(st.author)?.values() ?? [])], settings.threshold)
+        : null;
+      const postIsAi = st.ownVerdict && r.verdict === 'ai';
+      const isAi = postIsAi || !!acct;
+
+      const badges: HTMLElement[] = [];
+      if (st.ownVerdict && r.verdict !== 'human') {
+        const pct = Math.round(r.score * 100);
+        const b = el('span', `slopless-badge slopless-${r.verdict}`, `${r.label} · ${pct}%`);
+        b.title = `Slopless on-device model: ${pct}% AI${r.cached ? ' (cached)' : `, ${r.ms} ms`}`;
+        badges.push(b);
+      }
+      if (acct) {
+        const b = el('span', 'slopless-badge slopless-account', `Account: mostly AI · ${acct.n} posts`);
+        b.title = `${Math.round(acct.aiShare * 100)}% of this account's posts you've seen this session scored as AI. Nothing is saved.`;
+        badges.push(b);
       }
 
-      if (settings.mode === 'hide') {
-        // Collapse the whole post, unless its content lives in a shadow root (new Reddit):
-        // light-DOM children we add there wouldn't render, so collapse just the text.
-        const whole = !post.shadowRoot;
-        const bar = el('div', 'slopless-bar', `Hidden by Slopless: ${r.label} (${Math.round(r.score * 100)}%) `);
+      if (settings.mode === 'hide' && isAi) {
+        const why = postIsAi ? `${r.label} (${Math.round(r.score * 100)}%)` : `account posts mostly AI (${acct!.n} posts)`;
+        const bar = el('div', 'slopless-bar', `Hidden by Slopless: ${why} `);
         const show = el('button', 'slopless-link', 'Show');
         show.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
           post.removeAttribute('data-slopless-hidden');
           textEl.classList.remove('slopless-replaced');
-          bar.remove();
-          textEl.before(badge(st));
+          bar.parentNode?.removeChild(bar);
+          textEl.before(...badges);
         };
         bar.append(show);
-        if (whole) {
+        // Collapse the whole post unless its content lives in a shadow root (new Reddit).
+        if (!post.shadowRoot) {
           post.setAttribute('data-slopless-hidden', '');
           post.prepend(bar);
         } else {
@@ -149,74 +174,35 @@ export default defineContentScript({
         }
         return;
       }
-
-      // rewrite: keep the site's own node untouched (React owns it); show ours beside it.
-      textEl.before(badge(st));
-      if (st.showOriginal) return;
-      if (!st.rewritten) {
-        if (!st.rewriting) {
-          st.rewriting = true;
-          send<Result<{ text: string }>>({ type: 'rewrite', text: st.text }).then((res) => {
-            st.rewriting = false;
-            if (states.get(post) !== st) return;
-            if (res?.ok && res.text) {
-              st.rewritten = res.text;
-            } else {
-              // Rewrite unavailable: fall back to showing the original with its badge.
-              st.showOriginal = true;
-              console.warn('[slopless] rewrite failed:', res?.ok === false ? res.error : res);
-            }
-            render(post, st);
-          });
-        }
-        textEl.classList.add('slopless-pending');
-        return;
-      }
-      textEl.classList.add('slopless-replaced');
-      const box = el('div', 'slopless-rewrite');
-      box.append(document.createTextNode(st.rewritten));
-      const toggle = el('button', 'slopless-link', 'Rewritten by Slopless · show original');
-      toggle.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        st.showOriginal = true;
-        render(post, st);
-      };
-      box.append(toggle);
-      textEl.after(box);
+      if (badges.length) textEl.before(...badges);
     }
 
     function rerenderAll() {
       for (const [post, st] of states) {
         if (!post.isConnected) states.delete(post);
-        else if (st.result || st.error) render(post, st);
+        else render(post, st);
       }
     }
 
     onSettingsChanged((s) => {
-      const thresholdChanged = s.threshold !== settings.threshold;
+      const rescore = s.threshold !== settings.threshold || s.minWords !== settings.minWords || s.maxTokens !== settings.maxTokens;
       settings = s;
-      if (!active()) {
+      if (!active() || rescore) {
         for (const [post, st] of states) clearUi(post, st);
         states.clear();
-        return;
+        accounts.clear();
       }
-      if (thresholdChanged) {
-        // cached scores get a fresh verdict from the background
-        for (const [post, st] of states) {
-          clearUi(post, st);
-          states.delete(post);
-        }
-      }
+      if (!active()) return;
       rerenderAll();
-      scan(document);
+      scan();
     });
 
+    document.addEventListener('visibilitychange', () => !document.hidden && active() && scan());
     mo.observe(document.body, { childList: true, subtree: true, characterData: true });
     ctx.onInvalidated(() => {
       mo.disconnect();
       io.disconnect();
     });
-    if (active()) scan(document);
+    if (active()) scan();
   },
 });

@@ -8,3 +8,5 @@ model-src/
 *.log
 training/data/
 training/runs/
+__pycache__/
+*.pyc

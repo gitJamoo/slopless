@@ -1,0 +1,11 @@
+[
+  { "in": "Hello   world\n\nnew   line", "out": "Hello world new line" },
+  { "in": "“Smart quotes” and ‘single’ ones", "out": "\"Smart quotes\" and 'single' ones" },
+  { "in": "Check https://example.com/a?b=1 and www.test.org now", "out": "Check <url> and <url> now" },
+  { "in": "thanks @jack_dorsey and @Some1 for this", "out": "thanks @user and @user for this" },
+  { "in": "mail me at a.b+c@mail.co.uk please", "out": "mail me at <email> please" },
+  { "in": "@start of post", "out": "@user of post" },
+  { "in": "Keep CASE and emoji 🚀👇", "out": "Keep CASE and emoji 🚀👇" },
+  { "in": "FullＷidth ＡＢＣ ﬁ ligature", "out": "FullWidth ABC fi ligature" },
+  { "in": "  leading and trailing  ", "out": "leading and trailing" }
+]

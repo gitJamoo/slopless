@@ -1,12 +1,20 @@
-import { readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { defineConfig } from 'wxt';
+
+// CPU-only ONNX Runtime (14 MB WASM) instead of the WebGPU build (27 MB). Slopless never
+// touches the GPU. transformers.js imports `onnxruntime-web/webgpu`, so redirect that import.
+const ortDist = ['node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist', 'node_modules/onnxruntime-web/dist']
+  .map((p) => resolve(p))
+  .find((p) => existsSync(p))!;
 
 export default defineConfig({
   manifestVersion: 3,
+  vite: () => ({
+    resolve: { alias: { 'onnxruntime-web/webgpu': join(ortDist, 'ort.wasm.min.mjs') } },
+  }),
   hooks: {
-    // ONNX Runtime's bundle makes Vite emit a second 27MB copy of the WASM binary.
-    // We load it from /ort (wasmPaths in lib/engine.ts), so drop the duplicate.
+    // Safety net: never ship a second, bundler-emitted copy of the WASM binary.
     'build:done': (wxt) => {
       const assets = join(wxt.config.outDir, 'assets');
       try {
@@ -16,18 +24,13 @@ export default defineConfig({
   },
   manifest: ({ browser }) => ({
     name: 'Slopless',
-    description:
-      'Flags, hides, or rewrites AI-generated posts in your feed. Detection runs on your device by default.',
+    description: 'Flags or hides AI-generated posts in your feed. A small model runs on your device; nothing is sent anywhere.',
     permissions: browser === 'firefox' ? ['storage'] : ['storage', 'offscreen'],
-    // Only the Pangram API is contacted, and only if you choose a Pangram mode.
-    host_permissions: ['https://text.external-api.pangram.com/*'],
-    // Requested at runtime, only if you point "Rewrite" at your own LLM endpoint.
-    optional_host_permissions: ['http://*/*', 'https://*/*'],
     content_security_policy: {
-      // transformers.js / ONNX Runtime compile WebAssembly; nothing is loaded remotely.
+      // ONNX Runtime compiles WebAssembly; nothing is loaded remotely.
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
     },
-    // Cross-origin isolation lets ONNX Runtime use multiple WASM threads (big CPU speedup).
+    // Cross-origin isolation lets ONNX Runtime use WASM threads.
     ...(browser === 'firefox'
       ? {}
       : {
@@ -36,7 +39,7 @@ export default defineConfig({
         }),
     browser_specific_settings:
       browser === 'firefox'
-        ? { gecko: { id: 'slopless@example.dev', strict_min_version: '128.0' } }
+        ? { gecko: { id: 'slopless@slopless.dev', strict_min_version: '128.0' } }
         : undefined,
   }),
 });

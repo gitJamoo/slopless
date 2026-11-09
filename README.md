@@ -1,115 +1,104 @@
 # Slopless
 
-A browser extension that finds AI-generated posts in your feed and **flags**, **hides**, or **rewrites** them, usually before they scroll into view.
+A browser extension that spots AI-generated posts in your feed and **flags** or **hides** them, usually before you've scrolled to them.
 
-Detection runs **on your device** by default, using Pangram's open-weights detector ([Open Pangram / EditLens](https://www.pangram.com/blog/introducing-open-pangram)). You can also use the **Pangram API**, or a **hybrid** of the two that only pays for posts the local model is unsure about.
+Detection uses a **small classifier trained for this one job** (~17 MB). It runs **on your device, on the CPU**: no server, no account, no API key, no network requests. Starting with X; more sites are on the [roadmap](ROADMAP.md).
 
 | Mode | What happens to a likely-AI post |
 |---|---|
 | Off | Nothing. |
-| Flag | A small badge, e.g. `⚠ AI-generated · 91%`. |
+| Flag | A small badge: `Likely AI · 91%`, or `Account: mostly AI · 6 posts`. |
 | Hide | The post collapses to "Hidden by Slopless · Show". |
-| Rewrite | The text is replaced with a plain, human-sounding version, with a "show original" link. |
 
-| Detector | Where the text goes | Cost | Accuracy |
-|---|---|---|---|
-| On-device | Nowhere | Free | Good. Higher false positives on non-native English (see below). |
-| Hybrid | To Pangram only when the local score is in an uncertain band (default 0.35–0.85) | A fraction of API cost | Near-API |
-| Pangram API | Pangram, using your own key | ~$0.05 per 100 words | Best |
-
-Sites: X/Twitter, Reddit (new and old), LinkedIn, Bluesky, plus a local demo feed. Browsers: Chrome, Edge, Brave, Arc and other Chromium browsers (Windows, macOS, Linux, ChromeOS), and Firefox (desktop and Android). The code is Safari-compatible but not packaged for it yet.
+> **Status:** the extension works end to end, but the shipped model is a *stand-in* (the right architecture with an untrained head), so its verdicts are random. The real model is being trained; see [`training/PLAN.md`](training/PLAN.md).
 
 ## How it works
 
 ```
-content script (one adapter per site)
-  ├─ MutationObserver + IntersectionObserver (1500px look-ahead): scores posts before you reach them
-  ├─ skips posts under 40 words (detectors are unreliable on short text)
-  └─ blurs the post text until a verdict arrives (fails open after 10 s)
-        │  runtime message: post text
+content script (per-site adapter, lib/adapters.ts)
+  ├─ MutationObserver + IntersectionObserver (1200px look-ahead): scores posts before you reach them
+  ├─ blurs a post's text until its verdict arrives (fails open after 10 s)
+  ├─ posts ≥ 15 words get their own verdict
+  └─ account verdicts: on X, every post ≥ 5 words counts toward its author. When ≥ 5 of an
+     author's posts average AI, all of that author's posts get flagged, even short replies.
+     Kept in memory for the session only.
+        │  runtime message (text)
         ▼
 background worker
-  ├─ cache: SHA-256(text) → score (post text itself is never stored)
-  ├─ micro-batching (up to 8 posts / 30 ms) → one model call
-  ├─ policy: local | pangram | hybrid (local first, escalate if unsure), daily $ budget
-  └─ rewrite: Chrome built-in Rewriter (on-device) or any OpenAI-compatible endpoint (e.g. Ollama)
+  ├─ cache: SHA-256(text) → score (the post text itself is never stored)
+  └─ micro-batching (up to 8 posts or 30 ms) → one model call
         ▼
 offscreen.html (Chrome offscreen document; hidden iframe on Firefox/Safari)
-  └─ transformers.js + ONNX Runtime Web: WebGPU (4-bit) → WASM (8-bit, multithreaded) fallback
-       EditLens RoBERTa-large → 4 buckets [human, light AI edit, heavy AI edit, AI] → score = E[bucket]/3
+  └─ transformers.js + ONNX Runtime Web (CPU-only WASM, 2 threads)
+     → closes itself after 3 idle minutes, which frees all its memory
 ```
 
-The on-device path makes no network requests. The model and the ONNX Runtime WASM files ship inside the extension, so nothing is loaded from a CDN.
+The text normalization (`normalizeForModel` in `lib/text.ts`) is mirrored in Python (`training/slopdata/normalize.py`). Both are tested against one shared fixture, so the model sees text the same way in training and in the browser.
+
+## Measured performance
+
+Raspberry Pi 5, headless Chromium, int8, 2 threads. A Pi 5 is roughly as fast as a mid-range phone CPU or an old laptop.
+
+| Model | Size | 20 words | 60 words | 150 words | Load |
+|---|---|---|---|---|---|
+| **Ettin-17M** (the target architecture) | 17 MB | 25 ms | 37 ms | 67 ms | 1.3 s |
+| RoBERTa-large (the earlier prototype) | 357 MB | — | ~1,700 ms (100 words) | ~4,000 ms (250 words) | 4.6 s |
+
+The whole extension is 35.5 MB: model 17 MB, CPU runtime 14 MB, tokenizer 3.6 MB. It never uses the GPU.
 
 ## Setup
 
 ```bash
-npm install            # also copies ONNX Runtime's WASM into public/ort
+npm install                 # also copies ONNX Runtime's CPU WASM into public/ort
 ```
 
-### Option A: Pangram API only (simplest)
+### Get a model
+
+The extension loads whatever is in `public/models/slopless-x/`. To make one you need Python with `torch transformers onnx onnxruntime onnxscript` (see `training/requirements.txt`).
 
 ```bash
-npm run build          # → .output/chrome-mv3
+# stand-in for development: real size and speed, random verdicts
+python scripts/export_model.py --model jhu-clsp/ettin-encoder-17m --stand-in
+
+# a trained model (see training/PLAN.md)
+python scripts/export_model.py --model training/runs/<run>/best
 ```
 
-Load `.output/chrome-mv3` as an unpacked extension (`chrome://extensions` → Developer mode → Load unpacked). In Settings, paste your Pangram API key and choose the **Pangram** detector.
-
-### Option B: on-device model
-
-The weights are gated on Hugging Face and licensed CC BY-NC-SA 4.0, so each user builds them locally instead of the extension redistributing them.
-
-1. Request access at <https://huggingface.co/pangram/editlens_roberta-large> and run `huggingface-cli login`.
-2. Convert the model:
-   ```bash
-   python3 -m venv .venv && .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
-   .venv/bin/pip install transformers onnx onnxruntime onnxscript huggingface_hub
-   .venv/bin/python scripts/convert_model.py --dtypes q8,q4   # ~360MB q8 for CPU, ~400MB q4 for WebGPU
-   ```
-   Use `--dtypes q8` for a smaller build. `--stand-in` exports the ungated `roberta-large` with a random head. It has the same speed but its scores are meaningless, so it's only useful for benchmarking without access.
-3. Run `npm run build`, then load the extension. **Settings → Run speed benchmark** shows how fast it runs on your machine.
-
-Firefox: `npm run build:firefox`, then `about:debugging` → Load Temporary Add-on → `.output/firefox-mv3/manifest.json`.
-
-### Try it without a social login
+### Build and load
 
 ```bash
-npm run demo           # http://localhost:5179 — a fake feed of human- and AI-style posts
+npm run build               # → .output/chrome-mv3   (npm run build:firefox → .output/firefox-mv3)
+```
+
+- **Chrome, Edge, Brave, Arc:** go to `chrome://extensions`, turn on Developer mode, click "Load unpacked", and pick `.output/chrome-mv3`.
+- **Firefox:** go to `about:debugging`, click "Load Temporary Add-on", and pick `.output/firefox-mv3/manifest.json`.
+
+### Try it without an X login
+
+```bash
+npm run demo                # http://localhost:5179: a fake feed with human posts, AI posts, and a reply bot
 ```
 
 ## Development
 
 ```bash
-npm run dev            # Chrome with hot reload
-npm test               # unit tests (text cleaning matches EditLens preprocessing, scoring, billing)
+npm run dev                 # Chrome with hot reload
+npm test                    # unit tests (JS + the Python normalization twin)
 npm run typecheck
-npm run build && node scripts/e2e.mjs --shots shots   # headless Chromium end-to-end, with screenshots
+npm run build && npm run e2e -- --shots shots    # headless Chromium end to end, with screenshots
 ```
 
-## Measured performance
+## Honest limits
 
-Measurements from the e2e benchmark (`scripts/e2e.mjs`). Per-post latency for the RoBERTa-large architecture:
-
-**Raspberry Pi 5** (4× Cortex-A76 @ 2.4 GHz). Headless Chromium, WASM, 8-bit, 4 threads. This is roughly what a mid-range phone CPU or an old laptop gives you.
-
-| Post length | Tokens | Median | Batched ×8 (per post) |
-|---|---|---|---|
-| 40 words | 45 | 835 ms | 686 ms |
-| 100 words | 107 | 1,715 ms | 1,859 ms |
-| 250 words | 256 | 4,072 ms | 4,502 ms |
-
-The model loads in 4.6 s from a cold start. For comparison, native ONNX Runtime on the same Pi runs the same 8-bit file in 315 ms at 128 tokens, so browser WASM costs about 5×. The 4-bit file is about 5× slower than 8-bit on CPU, which is why it's used only on WebGPU.
-
-WebGPU numbers (laptops with integrated or discrete GPUs) aren't measured yet. Run **Settings → Run speed benchmark** on your machine and add a row.
-
-## Limits and honest caveats
-
-- **Short posts are skipped.** Most tweets are under 40 words, which is too little text for any detector to call reliably.
-- **False positives matter.** Pangram reports the open RoBERTa model wrongly flags about 10% of writing by non-native English speakers, against about 0% for its paid model. The default action is therefore **Flag**, and Hide or Rewrite are always one click from the original. Hybrid mode exists for this reason.
-- **Phones.** Firefox for Android runs the extension, but without WebGPU the model runs on the CPU and takes seconds per post, so use Pangram or Hybrid there. iOS Safari limits extension memory far below what the model needs. Native apps (Instagram, X) can't be inspected on iOS at all.
+- **Short posts are hard.** A single 10-word reply carries little signal. That's why account-level verdicts exist.
+- **False positives are the failure that matters.** The default threshold is tuned for at most 1% false positives on human posts, so the extension misses some AI posts rather than accusing people. The default mode is Flag, and Hide is always one click from the original.
+- **AI text prompted to "sound human"** is the hardest case. The training plan targets it directly with adversarial data, but no small model will catch all of it.
 - **Selectors drift.** Sites change their HTML. Each site is a small adapter in `lib/adapters.ts`.
-- **Rewriting is ironic.** It uses an AI model to make text sound less like AI. With Chrome's built-in Rewriter (Gemini Nano) or a local Ollama model it at least stays on your machine.
+
+## Related
+
+The `prototype-pangram` git tag holds an earlier version that also supported Pangram's API and their open-weights model (Open Pangram, CC BY-NC-SA). Bringing back "bring your own Pangram key" is on the roadmap.
 
 ## License
 
-Code: MIT. The Open Pangram model weights are © Pangram Labs, licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), non-commercial use only, and are not included in this repo. Slopless is not affiliated with Pangram Labs.
+MIT. See [LICENSE](LICENSE). Not affiliated with X, Pangram Labs, or any platform it runs on.

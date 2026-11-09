@@ -1,229 +1,185 @@
-# Training plan: a small, license-clean AI-text detector for X
+# Training plan: Slopless X model (v0)
 
-**Executor:** Claude Code on the RTX 4060 machine. Work phase by phase. Each phase ends with a **gate**. Stop at every gate, write results into `training/LOG.md`, and report to the user before continuing.
+**Executor:** Claude Code on the RTX 4060 machine. Work phase by phase. Each phase ends with a **gate**: stop, write results to `training/LOG.md`, and report to the user before continuing.
 
-## Why this exists
+**Goal:** a small (≤ 40 MB), license-clean classifier that tells human-written X posts from AI-written ones, runs on CPU in the browser, and ships inside the extension. The extension already works; it just needs `public/models/slopless-x/` replaced by a real model (see `scripts/export_model.py`).
 
-Slopless (the browser extension in this repo) needs an on-device detector that:
-
-1. **Can be published.** Open Pangram (`pangram/editlens_roberta-large`) is gated and CC BY-NC-SA, so it can't ship in a public extension. Everything in this model must be license-clean.
-2. **Is light.** Target ≤ 40 MB int8, ≤ 100 MB RAM, CPU-only, ≤ 200 ms per 60-word post on a Raspberry Pi 5 in the browser. The current RoBERTa-large stand-in is 360 MB and takes 1.7 s per 100-word post on the Pi (see `README.md`).
-3. **Works on X first.** Posts are short (15–280 words), and replies are a major slop vector. LinkedIn, Reddit, Slack and Gmail come later.
-
-Output: three classes, `human`, `ai_edited` and `ai_generated`. Score = expected class / 2, in [0, 1]. This keeps the same interface as the extension's current `bucketScore`, so `lib/engine.ts` barely changes.
+**Interface the extension expects:**
+- A Hugging Face `AutoModelForSequenceClassification`.
+- 2 labels in v0: `0 = human`, `1 = ai`. The extension's score is P(ai).
+- Input text is passed through `normalizeForModel` (`lib/text.ts`) before it reaches the model.
+- Training must use the Python twin `slopdata/normalize.py`, which is tested against `normalize_cases.json`. Never change one without the other.
 
 ## Hard rules
 
-- **No tweets in training data.** Tweet datasets aren't license-clean: X's terms allow sharing IDs only, and users own their text. Real tweets may be used **only in the held-out evaluation set**, never committed, and the write-up must say so.
-- **No Pangram outputs as labels.** Training on Pangram API or Open Pangram predictions (distillation) is forbidden. Pangram may be used only to *evaluate* against.
-- **Generators must be license-checked** before use (Phase 0).
-- **Keep data out of git.** Everything under `training/data/` is gitignored. Commit scripts, configs, `LOG.md`, and the eval report.
-- **Secrets via env vars only:** `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `HF_TOKEN`, `PANGRAM_API_KEY`. Never print or commit them.
-- **Hosted-model spend cap: $40 total.** `generate.py` enforces it and logs running cost.
+- **License-clean training data only.**
+  - No tweets in training (X's terms allow sharing IDs only, and users own their text). Real tweets may be used **for evaluation only**, never committed.
+  - No Pangram outputs or Open Pangram predictions used as labels.
+  - Record every source and its license in `LOG.md`.
+- **Generator licenses:** prefer Apache-2.0 open models (Qwen, Mistral, OLMo). Check Llama and Gemma terms before using them. For hosted APIs, quote the terms clause that permits using outputs to train a classifier, or don't use that provider.
+- **Data stays out of git:** `training/data/` and `training/runs/` are gitignored. Commit scripts, configs, `LOG.md` and `report/`.
+- **Secrets via env vars only.** Never print them.
+- **Hosted-model spend cap: $40.** v0 can be done with $0 (open models only).
 
-## Layout to create
+## Layout
 
 ```
 training/
-  PLAN.md            this file
-  LOG.md             running log: decisions, numbers, gate results
-  pyproject.toml     uv-managed env
-  configs/           yaml per phase (generators, prompt matrix, train runs)
-  slopdata/          python package
-    collect.py       Phase 1
-    generate.py      Phase 2
-    postprocess.py   Phase 2 (normalize, filter, dedupe, shortcut audit)
-    split.py         Phase 2
-  train.py           Phase 3
-  eval.py            Phase 4
-  export.py          Phase 5
-  data/              gitignored: raw/, gen/, final/, eval/
-  runs/              gitignored: checkpoints
-  report/            committed: eval report + charts
+  PLAN.md  LOG.md  requirements.txt  normalize_cases.json
+  slopdata/   normalize.py (done) · collect.py · generate.py · postprocess.py · split.py
+  configs/    prompts.yaml · generators.yaml · train.yaml
+  train.py · eval.py
+  tests/      test_normalize.py (done)
+  data/ runs/ (gitignored)   report/ (committed)
 ```
 
----
-
-## Phase 0: environment and verification (about 1 hour)
-
-1. **Machine facts.** Record the OS, GPU model, VRAM (`nvidia-smi`), CUDA version, RAM and free disk in `LOG.md`. Need about 60 GB free.
-2. **Python environment.** Python 3.11 or 3.12 with `uv`. Install torch with CUDA, `transformers`, `datasets`, `accelerate`, `evaluate`, `scikit-learn`, `onnx`, `onnxruntime`, `datasketch` (MinHash), `ftfy`, `pyyaml`, `matplotlib`.
-3. **Local generation server.**
-   - Linux or WSL2: **vLLM** (fast batched generation).
-   - Native Windows: **llama.cpp server** or **Ollama**.
-   - Either way it must expose an OpenAI-compatible `/v1/chat/completions` endpoint.
-   - If VRAM is 8 GB, use 7–8B models at 4-bit (AWQ/GGUF Q4) with a context ≤ 4k.
-4. **Re-verify licenses** and record a table in `LOG.md`.
-
-   | Item | Expected | Check |
-   |---|---|---|
-   | `liamdugan/raid` | MIT | HF card. Confirm the human texts predate Nov 2022. |
-   | `yaful/MAGE` | Apache-2.0 | HF card. Confirm human sources and dates. |
-   | `jhu-clsp/ettin-encoder-17m`, `-32m` | MIT | HF card |
-   | `microsoft/MiniLM-L12-H384-uncased` | MIT | HF card |
-   | `microsoft/deberta-v3-large` (teacher, optional) | MIT | HF card |
-   | Local generators | Prefer Apache-2.0 (Qwen, Mistral, OLMo) | Read each model license. Note any output-use restrictions (Llama and Gemma have custom terms). |
-   | Hosted generators | — | Read OpenAI, Anthropic and Google terms on using outputs to train a *classifier*. Quote the relevant clause. If any is unclear, leave that provider out and tell the user. |
-
-5. **Export smoke test.** Load `jhu-clsp/ettin-encoder-17m` with a random 3-label head, export to ONNX, quantize to int8, and confirm the result loads in transformers.js. The repo already depends on `@huggingface/transformers`, and its web build includes `ModernBertForSequenceClassification`. Do this **before** investing in data.
-
-**Gate 0:** report the environment table, the license table (with any provider dropped), and the smoke-test result.
+Export is `scripts/export_model.py`, which already exists and is tested with a stand-in.
 
 ---
 
-## Phase 1: human data (`collect.py`, about half a day)
+## Phase 0: environment (about 1 hour)
 
-**Target:** about 40k human texts, X-shaped, all written before the 30 Nov 2022 ChatGPT launch.
+1. Record the OS, GPU and VRAM (`nvidia-smi`), RAM and free disk (need about 40 GB) in `LOG.md`.
+2. Create a Python 3.11/3.12 venv. Install `pip install -r training/requirements.txt`, plus torch with CUDA from pytorch.org's index.
+3. Install **Ollama** (Windows/Linux) or **vLLM** (Linux/WSL2, faster batching) and pull 2–3 generators sized for VRAM. With 8 GB, use 7–8B models at Q4. Set `OLLAMA_NUM_PARALLEL=4`.
+4. Run `python training/tests/test_normalize.py` and `npm test`. Both must pass.
+5. **Smoke test the whole path end to end with a tiny model:**
+   1. Fine-tune Ettin-17M for 50 steps on 200 fake examples.
+   2. Export with `scripts/export_model.py`.
+   3. `npm run build && npm run e2e`.
 
-1. Pull human-labelled rows from **RAID** (Reddit domain first, then reviews and other conversational domains) and **MAGE** (ChangeMyView, ELI5, Yelp, and similar casual sources). Drop AI rows; old-model AI rows may optionally be kept separately as extra `ai_generated` data tagged `legacy_gen`.
-2. **Reshape to X length.** Split long texts on sentence or paragraph boundaries into chunks of 15–280 words. Sample the chunk lengths to match an X-like distribution: about 60% of chunks 15–60 words, 30% 60–150, 10% 150–280. Keep at most 3 chunks per source text.
-3. **Normalize both classes identically.** This step is also applied to AI text in Phase 2, so it lives in `postprocess.py`.
-   - Run `ftfy`, NFKC, straight-vs-curly quote unification, and whitespace collapse.
-   - Replace URLs with `<url>`, @mentions with `@user`, and emails with `<email>`.
-   - Strip Reddit-isms that X never has: `EDIT:`, `/r/`, `u/`, markdown links and headings, `&gt;` quotes.
-4. **Filter.** Keep English only (a fastText or `langid` check) and drop texts that are mostly non-text (link dumps).
-5. **Dedupe** exact matches and near-duplicates (MinHash, Jaccard ≥ 0.8).
-6. **Hard human negatives.** Tag rows likely to fool a detector: formal, list-heavy, motivational or marketing-ish (a quick heuristic, e.g. a list or "lessons" structure). Report what fraction we have. Human hustle-post data is a known gap. Note it, but don't scrape LinkedIn.
-7. Save `data/raw/human.parquet` with `id, text, source, source_domain, words, hard_negative`.
+   Done before any data work, so pipeline problems surface early.
 
-**Gate 1:** row counts, length histogram, source mix, and 30 random samples pasted into `LOG.md` for the user to eyeball.
+**Gate 0:** environment table, license table for the planned generators and datasets, smoke-test output.
 
 ---
 
-## Phase 2: AI data (`generate.py`, `postprocess.py`, `split.py`, overnight)
+## Phase 1: human data (`collect.py`)
 
-**Target:** about 25k `ai_generated` and about 12k `ai_edited`, seeded from the Phase 1 human texts.
+**Target:** about 30k human texts, X-shaped, written before 30 Nov 2022 (the ChatGPT launch).
+
+1. **Sources** (verify license and dates first):
+   - `liamdugan/raid` (MIT): human rows, Reddit domain first.
+   - `yaful/MAGE` (Apache-2.0): human rows from casual sources (ChangeMyView, ELI5, Yelp).
+2. **Reshape to X length.** Split on sentence or paragraph boundaries into 15–280 word chunks, sampled so about 55% are 15–60 words, 30% 60–150, and 15% 150–280. Keep at most 3 chunks per source text.
+3. **Strip source-specific markup that X never has:** `EDIT:`, `r/`, `u/`, markdown links and headers, `&gt;` quotes.
+4. Apply `normalize_for_model`. Keep English only. Dedupe exact matches and near-duplicates (MinHash, Jaccard ≥ 0.8).
+5. **Tag hard human negatives:** formal, list-heavy, motivational or marketing-ish text, plus deliberately casual or lowercase text. These keep the model from learning "polished = AI" or "casual = human". Report the share of each.
+6. Write `data/raw/human.parquet` with `id, text, source, words, tags`.
+
+**Gate 1:** counts, length histogram, source mix, 30 random samples.
+
+---
+
+## Phase 2: AI data (`generate.py`, `postprocess.py`), overnight
+
+**Target:** about 30k AI texts, seeded from the Phase 1 human texts so topics match across classes. That forces the model to learn style rather than topic.
 
 ### Prompt matrix (`configs/prompts.yaml`)
 
-Seed each generation from a human text, so topics match across classes. That forces the model to learn style rather than topic.
-
-| Task | Label | Prompt idea |
+| Task | Prompt idea | Share |
 |---|---|---|
-| `fresh_post` | ai_generated | First get a one-line topic summary of the seed, then "Write an X post about: {topic}". Don't show the generator the seed text itself. |
-| `reply` | ai_generated | "Here's a post: {seed}. Write a reply." Include the generic engagement-bait reply style. |
-| `quote_take` | ai_generated | "Write a quote-post reacting to: {seed}" |
-| `thread_opener` | ai_generated | "Write the first post of a thread about {topic}" |
-| `humanized` | ai_generated | Any of the above plus "sound casual, lowercase ok, no em dashes, no hashtags, maybe a typo". **This is critical.** |
-| `persona` | ai_generated | Founder, crypto, fitness, politics, tech-bro, wholesome… |
-| `polish` | ai_edited | "Improve this post: {seed}" |
-| `light_edit` | ai_edited | "Fix grammar only: {seed}". Keep it only if the output differs from the seed by more than a trivial amount (normalized edit distance > 0.05); otherwise drop it. |
+| `fresh_post` | First summarize the seed's topic in one line, then "Write an X post about: {topic}". Don't show the seed itself. | 20% |
+| `reply` | "Here's a post: {seed}. Write a reply." Include the generic engagement-bait style. | 20% |
+| `quote_take` / `thread_opener` | React to the seed, or open a thread on its topic | 10% |
+| `persona` | Founder, crypto, fitness, politics, tech-bro, wholesome, etc. | 10% |
+| `polish` | "Improve this post: {seed}" (labelled AI in v0) | 10% |
+| **`humanized`** | See Phase 2b | **30%** |
 
-Vary temperature (0.7–1.1) and length instructions, and target the same length histogram as Phase 1.
+Vary temperature (0.7–1.2), top-p and min-p, length instructions, and persona. Match the human length histogram.
 
-### Generators (`configs/generators.yaml`)
+### `generate.py`
 
-- **Local (free, most of the volume):** 3–5 families, e.g. Qwen 7–8B, Mistral 7B or Nemo, OLMo 7B, plus Llama or Gemma only if Phase 0 cleared their licenses.
-- **Hosted (≤ $40, about 15–25% of AI rows):** the cheapest current small model from each provider that cleared Phase 0. Real X slop mostly comes from ChatGPT, Claude and Gemini, so these matter most for **evaluation**.
-
-### `generate.py` requirements
-
-- Takes any OpenAI-compatible base URL, plus native SDKs for the hosted providers if simpler.
-- Async with a concurrency limit, retries with backoff, and **resumable**: it writes JSONL shards and skips ids already done.
-- Records `id, seed_id, generator, family, task, label, temperature, prompt_hash, text, cost_usd`.
-- Enforces the spend cap and stops cleanly when it's hit.
+- Works with any OpenAI-compatible endpoint (Ollama/vLLM locally; optionally hosted).
+- Async with a concurrency limit, retries, and **resumable** JSONL shards.
+- Records `id, seed_id, generator, family, task, temperature, text, cost_usd`.
+- Enforces the spend cap.
 
 ### `postprocess.py`
 
-- Strip preambles and wrappers ("Here's a tweet:", surrounding quotes, "Tweet 1/"), apply the same normalization as Phase 1, enforce the length window, and dedupe.
-- **Shortcut audit, required.** Train a quick bag-of-words / char-n-gram logistic regression for human vs AI and list its top 50 features. If any feature is an artifact rather than style, fix normalization and rerun. Examples of artifacts: `<url>` appearing only in human text, emoji only in AI text, trailing hashtags, curly quotes, length alone. Also check that a length-only classifier is near chance within each length bucket. Record before and after in `LOG.md`.
+- Strip preambles ("Here's a tweet:", wrapping quotes, "1/") and apply `normalize_for_model`.
+- Enforce the 15–280 word window and dedupe.
+- **Shortcut audit (required):** train a quick character n-gram logistic regression and inspect its top 50 features. Anything that's an artifact rather than style means fixing normalization and redoing it. Examples: `<url>` only in human text, hashtags only in AI text, trailing ellipsis, a particular quote style. Also confirm a length-only classifier is near chance within each length bucket. Log before and after.
 
 ### `split.py`
 
-- Split **by seed**: a human text and all its AI derivatives go in the same split, so topics don't leak.
-- Train / val / test = 80 / 10 / 10.
-- **Held-out generator test:** pick one local family and one hosted provider and exclude them from train and val entirely. They become `test_unseen_gen`. This is the most important number in the report.
-- **Real-tweet eval set** (`data/eval/real_x.parquet`), eval-only and never committed:
-  - Human: a few thousand pre-2022 tweets from a public academic set (e.g. `cardiffnlp/tweet_eval`).
-  - AI: freshly generated X posts from the held-out generators.
-  - This measures how well the Reddit-trained model handles real X text.
-- **Non-native English eval:** the EditLens repo has `data/nonnative_english.csv` (CC BY-NC-SA, OK for non-commercial evaluation; not for training). Use it to measure false positives against Pangram's published numbers (about 10% FPR for the open RoBERTa model, 0% for Pangram's production model).
+- Split **by seed** (a seed and all its derivatives in one split), 80/10/10.
+- **Held-out generator:** keep one whole model family out of train and val. That becomes `test_unseen_gen`, the most honest number in the report.
+- **Real-tweet eval set** (`data/eval/real_x.parquet`, eval-only, never committed):
+  - Human: pre-2022 tweets from a public academic set (e.g. `cardiffnlp/tweet_eval`).
+  - AI: fresh generations from the held-out family.
 
-**Gate 2:** class and length tables, generator mix, cost spent, shortcut-audit results, and 30 random AI samples per task.
+### Phase 2b: AI text written to sound human (the main accuracy lever)
 
----
+This is where most small detectors fail, so it gets its own budget. A third of the AI data and one extra loop:
 
-## Phase 3: training (`train.py`, hours)
+1. **Humanizer prompts:**
+   - "Write like a real person on X: lowercase is fine, no em dashes, no hashtags, no lists, a typo or two, a strong opinion, a specific detail."
+   - Mimic a given human seed's voice (style transfer).
+   - "Rewrite this to avoid AI detection."
+2. **Two-step rewriting:** generate normally, then have a *different* model rewrite it casually. This mimics the paraphrasing tools people use to disguise AI text.
+3. **The same noise on both classes:** random typos, lowercasing, emoji insertion and punctuation removal, applied to human and AI text alike. That way "has typos" and "lowercase" stop meaning "human", and the model learns deeper cues.
+4. **Human hard negatives balance it:** polished and listy human posts (Phase 1 tags) keep the model from flagging anything neat.
+5. **Red-team loop** (after the first model trains):
+   1. Generate about 5k new humanized posts.
+   2. Score them with the current model.
+   3. Keep the ones it misses (score < threshold).
+   4. Add them to training and retrain.
+   5. Repeat 2–3 rounds.
 
-**Candidates:** `ettin-encoder-17m`, `ettin-encoder-32m`, `MiniLM-L12-H384-uncased`.
+   Track the humanized catch rate on a **held-out** humanized set each round. It should rise without the human false-positive rate going up.
+6. **Account-level backup:** in the product, many short humanized replies from one account still add up, so the account verdict covers some of what slips past single-post scoring.
 
-**Defaults:**
-- Sequence classification with 3 labels, `max_length` 128 (X is short; also try 256 for the best candidate).
-- bf16, batch 64 (use gradient accumulation if VRAM-bound).
-- Learning rate 5e-5 for 17M/32M and 3e-5 for MiniLM, 3 epochs, warmup 6%, weight decay 0.01, eval every half epoch.
-- Class weights to balance classes.
-- Select the best checkpoint by **val TPR at 1% FPR**, not accuracy.
-
-**Optional teacher, only if the small models fall short of the gate:**
-1. Train `deberta-v3-large` on the same data (batch 8 with accumulation at length 128, which should fit in 8 GB with bf16 and gradient checkpointing).
-2. Distill into the best small model: KL on teacher soft labels at temperature 2, plus 0.5 × cross-entropy on the true labels.
-
-The teacher is our own model, so this is license-clean.
-
-Log every run (config, metrics, wall time) to `LOG.md` and `runs/<name>/`.
-
-**Gate 3:** comparison table with model, size, val AUROC, val TPR at 1% FPR, and train time.
+**Gate 2:** class, length and task tables, generator mix, shortcut-audit before and after, 30 random AI samples per task.
 
 ---
 
-## Phase 4: evaluation (`eval.py`, about half a day)
+## Phase 3: training (`train.py`, minutes per run)
 
-For the best 1–2 models, compute these on `test`, `test_unseen_gen`, `real_x` and `nonnative`:
+- **Candidates:** `jhu-clsp/ettin-encoder-17m` (default target), `jhu-clsp/ettin-encoder-32m`, `microsoft/MiniLM-L12-H384-uncased`. All MIT.
+- **Settings:** 2 labels, `max_length` 128, bf16, batch 64, learning rate 5e-5 (17M/32M) or 3e-5 (MiniLM), 3 epochs, warmup 6%, weight decay 0.01, eval every half epoch.
+- **Model selection:** pick the checkpoint with the best **val TPR at 1% FPR**, not accuracy.
+- Save to `runs/<name>/best` in Hugging Face format. Log config, metrics and wall time.
+- Run the Phase 2b red-team loop here: train → mine misses → retrain.
 
-- AUROC, **TPR at 1% FPR**, FPR at the threshold the extension will ship with, and calibration (ECE).
-- Breakdowns by length bucket (15–40, 40–100, 100–280 words), by task (especially `humanized` and `reply`), and by generator.
-- **Comparisons on the same 300-post sample** (stratified by length and generator):
-  - Open Pangram RoBERTa-large. Its CC BY-NC-SA license allows non-commercial evaluation, and access needs `HF_TOKEN` with accepted terms. Use the converter in `scripts/convert_model.py` or the EditLens inference script.
-  - The Pangram API (`pangram-4`). This costs about $15–25, so **ask the user before spending**.
-- **Threshold recommendation:** choose the threshold that gives ≤ 1% FPR on `real_x` human posts, plus the band of uncertain scores to send to Pangram in Hybrid mode.
-
-Write `report/REPORT.md` with:
-- the tables,
-- a size-vs-accuracy chart (ours vs Open Pangram vs Pangram API),
-- a ROC chart,
-- the honest-limitations section: Reddit-trained, short-text limits, non-native false positives, generator drift.
-
-**Gate 4 targets** (initial; adjust with the user after seeing the data):
-- `test_unseen_gen`, 40+ words: TPR ≥ 80% at 1% FPR.
-- 15–40 words: TPR ≥ 50% at 1% FPR. Short text is hard, and the account-level aggregation in the extension is there to cover it.
-- `nonnative` FPR at the shipping threshold ≤ 5%. Must beat Open Pangram's ~10%.
-- int8 size ≤ 40 MB.
+**Gate 3:** table of model, size, val AUROC, val TPR at 1% FPR, humanized TPR at 1% FPR, and train time.
 
 ---
 
-## Phase 5: export (`export.py`, about 1 hour)
+## Phase 4: evaluation (`eval.py`)
 
-1. Export the best model to ONNX at opset 17 with dynamic batch and sequence axes.
-2. Dynamic-quantize to int8 (`model_quantized.onnx`). Also try `q4` only if a WebGPU path is wanted later; CPU stays q8.
-3. Write a transformers.js-ready folder at `public/models/slopsense-x-v1/`:
-   - `config.json`, the tokenizer files, `onnx/model_quantized.onnx`,
-   - `slopless.json` containing `{ "dtypes": ["q8"], "n_buckets": 3, "max_length": 128 }`,
-   - a `MODEL_CARD.md` with data, license, eval summary and intended use.
-4. **Parity check:** the PyTorch vs ONNX int8 max logit difference must be small, and argmax must agree on ≥ 99.5% of the test set.
-5. **Browser latency check:** build the extension and run `node scripts/e2e.mjs` (headless Chromium). Report median ms per post for 20, 60 and 150 words. Target ≤ 200 ms at 60 words on the Pi and much less on the 4060 machine's CPU.
+Run on `test`, `test_unseen_gen`, `real_x`, the held-out humanized set, and `nonnative`. The last one is the EditLens repo's `data/nonnative_english.csv`, CC BY-NC-SA, OK for evaluation only.
 
-**Gate 5:** sizes, parity, and latency table.
+- **Metrics:** AUROC, **TPR at 1% FPR**, FPR at the shipping threshold, calibration (ECE).
+- **Breakdowns:** by length (15–40 / 40–100 / 100–280 words), task and generator.
+- **Shipping threshold:** the score that gives ≤ 1% FPR on `real_x` human posts. Put it in `slopless.json` as a recommendation; the extension default is 0.7, so update it if different.
+- **Optional comparisons (ask the user first; cost and access):**
+  - Open Pangram, for non-commercial evaluation.
+  - The Pangram API on a 300-post sample (about $15).
+  - Jev on the same sample (about $0.01).
+- Write `report/REPORT.md` with tables, a ROC chart, and an honest limitations section.
 
----
-
-## Phase 6: extension integration (back in the main repo)
-
-These can start in parallel on the Pi; they don't depend on the model.
-
-- **Resource limits:**
-  - Ship the CPU-only ONNX Runtime build (`ort-wasm-simd-threaded.wasm`, 14 MB instead of 27 MB). Make WebGPU an opt-in setting.
-  - Use 2 threads.
-  - Lazy-load the model, and close the offscreen document after 3 minutes idle.
-  - Score only posts within about one screen of the viewport, and pause while the tab is hidden.
-  - Show a memory and latency readout in the popup.
-- **Model swap:** set `MODEL_ID` to `slopsense-x-v1`, support `n_buckets` = 3, and set the X adapter's minimum to 15 words with the threshold from Phase 4.
-- **Account aggregation (X):** keep a per-session, in-memory map from `@handle` to recent scores. Once there are ≥ 5 posts and the mean is ≥ threshold, show an "account posts mostly AI" chip. Never persist it.
-- **Keep the large model as an extra:** Open Pangram stays an opt-in "accurate mode" for users who convert the weights themselves (`scripts/convert_model.py`), as now.
+**Gate 4 targets** (initial; revisit with the user):
+- `test_unseen_gen` 40+ words: TPR ≥ 80% at 1% FPR.
+- 15–40 words: TPR ≥ 50% at 1% FPR.
+- Humanized: TPR ≥ 60% at 1% FPR.
+- `nonnative` FPR ≤ 5% at the shipping threshold.
 
 ---
 
-## Open questions for the user (don't block on these; note them in LOG.md)
+## Phase 5: export and ship
 
-- Product name: Slopless vs SlopSense (rename pending).
-- Whether to email Pangram about permission to offer Open Pangram as an official optional download.
-- The Pangram API comparison spend (about $15–25) needs approval in Phase 4.
+1. Run `python scripts/export_model.py --model training/runs/<best>/best --name slopless-x-v0`.
+2. **Quantization check.**
+   - Run the int8 and fp32 ONNX models over the whole test set. The verdict at the shipping threshold must agree on ≥ 99.5% of posts.
+   - If it doesn't, export with `--dtype fp32` (about 68 MB). Note in `LOG.md` that, with the untrained stand-in head, int8 shifted logits by up to about 1.3, so this check matters.
+3. Run `npm run build && npm run e2e`. Report latency at 20, 60 and 150 words. The stand-in baseline on a Pi 5 is 25, 37 and 67 ms.
+4. Write a model card (`public/models/slopless-x/MODEL_CARD.md`): data sources and licenses, eval summary, intended use, limits.
+5. Decide with the user whether model files are committed (about 21 MB, under the MIT license since the data is clean) or attached to GitHub Releases.
+
+**Gate 5:** sizes, quantization agreement, latency table, model card.
+
+---
+
+## Later (not v0)
+Three classes (AI-edited), hosted-model generators, teacher distillation, a slop-score head, more sites. See `ROADMAP.md`.
