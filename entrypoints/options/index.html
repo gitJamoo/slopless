@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slopless settings</title>
+    <meta name="manifest.open_in_tab" content="true" />
+    <style>
+      main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; display: grid; gap: 18px; }
+      h1 { font-size: 22px; }
+      .card { display: grid; gap: 4px; }
+      .card h2 { margin-bottom: 4px; }
+      label.row span { flex: 1; }
+      label.row input[type=text], label.row input[type=password] { width: 58%; }
+      label.row input[type=number] { width: 90px; }
+      .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+      pre { white-space: pre-wrap; margin: 8px 0 0; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 1.5em; }
+      .saved { color: var(--ok); font-size: 12px; opacity: 0; transition: opacity .3s; }
+      .saved.on { opacity: 1; }
+      @media (max-width: 560px) { label.row { flex-wrap: wrap; } label.row input[type=text], label.row input[type=password] { width: 100%; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Slopless</h1>
+        <p class="muted">Flags, hides, or rewrites AI-generated posts. Settings stay on this device. <span id="saved" class="saved">Saved</span></p>
+      </header>
+
+      <section class="card">
+        <h2>On-device model</h2>
+        <p class="small" id="engine">Checking…</p>
+        <div class="actions">
+          <button class="btn secondary" id="bench">Run speed benchmark</button>
+        </div>
+        <pre id="bench-out" hidden></pre>
+      </section>
+
+      <section class="card">
+        <h2>Detection</h2>
+        <label class="row"><span>Detector</span>
+          <select data-k="detector">
+            <option value="local">On-device (Open Pangram, private, free)</option>
+            <option value="hybrid">Hybrid (on-device, Pangram API when unsure)</option>
+            <option value="pangram">Pangram API (most accurate, paid)</option>
+          </select>
+        </label>
+        <label class="row"><span>Flag as AI at score ≥</span><input type="number" data-k="threshold" min="0.3" max="0.99" step="0.05" /></label>
+        <label class="row"><span>Ignore posts shorter than (words)</span><input type="number" data-k="minWords" min="10" max="300" step="5" /></label>
+        <label class="row"><span>On-device token limit (256 is ~2× faster than 512)</span><input type="number" data-k="maxTokens" min="64" max="512" step="64" /></label>
+        <label class="row"><span>Blur posts until they're checked</span><input type="checkbox" data-k="blurWhileChecking" /></label>
+      </section>
+
+      <section class="card">
+        <h2>Pangram API</h2>
+        <p class="small muted">Used by the Pangram and Hybrid detectors. Your key is stored only in this browser and sent only to <code>text.external-api.pangram.com</code>. Pangram 4 costs about $0.05 per 100 words.</p>
+        <label class="row"><span>API key</span><input type="password" data-k="pangramKey" autocomplete="off" placeholder="pk-…" /></label>
+        <label class="row"><span>Daily budget (USD)</span><input type="number" data-k="dailyBudgetUsd" min="0" step="0.5" /></label>
+        <label class="row"><span>Hybrid: ask Pangram when local score is between</span>
+          <span style="flex:0"><input type="number" data-k="hybridLow" min="0" max="1" step="0.05" /> – <input type="number" data-k="hybridHigh" min="0" max="1" step="0.05" /></span>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Rewrite mode</h2>
+        <label class="row"><span>Rewrite with</span>
+          <select data-k="rewriteEngine">
+            <option value="builtin">Browser's built-in AI (Chrome, on-device)</option>
+            <option value="openai">OpenAI-compatible endpoint (e.g. Ollama)</option>
+          </select>
+        </label>
+        <div class="actions"><button class="btn secondary" id="dl-rewriter">Download built-in rewriter</button></div>
+        <label class="row"><span>Endpoint base URL</span><input type="text" data-k="openaiBaseUrl" /></label>
+        <label class="row"><span>Model</span><input type="text" data-k="openaiModel" /></label>
+        <label class="row"><span>API key (optional)</span><input type="password" data-k="openaiKey" autocomplete="off" /></label>
+        <p class="small muted" id="rw-note"></p>
+      </section>
+
+      <section class="card">
+        <h2>Sites</h2>
+        <label class="row"><span>X / Twitter</span><input type="checkbox" data-site="x" /></label>
+        <label class="row"><span>Reddit</span><input type="checkbox" data-site="reddit" /></label>
+        <label class="row"><span>LinkedIn</span><input type="checkbox" data-site="linkedin" /></label>
+        <label class="row"><span>Bluesky</span><input type="checkbox" data-site="bluesky" /></label>
+        <label class="row"><span>Local demo page (localhost)</span><input type="checkbox" data-site="demo" /></label>
+      </section>
+
+      <section class="card">
+        <h2>Try it</h2>
+        <textarea id="try-text" placeholder="Paste a post (40+ words works best)…"></textarea>
+        <div class="actions"><button class="btn" id="try">Check text</button></div>
+        <pre id="try-out" hidden></pre>
+      </section>
+
+      <p class="small muted">On-device detection uses Pangram's Open Pangram (EditLens RoBERTa-large) model, CC BY-NC-SA 4.0, non-commercial use only. Slopless is not affiliated with Pangram Labs.</p>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+node_modules/
+.output/
+.wxt/
+.venv*/
+public/ort/
+public/models/
+model-src/
+*.log
+training/data/
+training/runs/

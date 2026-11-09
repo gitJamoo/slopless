@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slopless demo feed</title>
+    <style>
+      :root { --bg: #f4f3f0; --card: #fff; --text: #1d1c22; --muted: #6b6a75; --line: #e4e1dc; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #121116; --card: #1c1b21; --text: #ecebf1; --muted: #9b9aa6; --line: #2d2c34; } }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+      main { max-width: 600px; margin: 0 auto; padding: 24px 16px 80px; display: grid; gap: 12px; }
+      header p { color: var(--muted); margin: 4px 0 8px; }
+      article { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+      .who { font-weight: 650; } .handle { color: var(--muted); font-weight: 400; }
+      .demo-text { white-space: pre-wrap; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <main id="feed">
+      <header>
+        <h1 style="margin:0;font-size:20px">Demo feed</h1>
+        <p>A mix of human-style and AI-style posts (all written for this demo). Load Slopless, pick a mode, scroll.</p>
+      </header>
+    </main>
+    <script>
+      const posts = [
+        ['Dana R.', '@danawrites', `ok so the 7:40 bus just didn't show up again and the app said "arriving" for 25 straight minutes. walked to work in the rain. my shoes are still wet and it's 2pm. if anyone from transit is reading this, the sign at Oak & 5th has been broken since march. not mad just tired`],
+        ['Growth Insights', '@growthinsights', `In today's fast-paced digital landscape, success isn't just about working harder — it's about working smarter. 🚀\n\nHere are 5 key lessons I've learned on my journey:\n\n1. Embrace failure as a stepping stone to growth.\n2. Consistency is the cornerstone of meaningful progress.\n3. Your network is your net worth.\n4. Never stop learning and evolving.\n5. Authenticity is your greatest superpower.\n\nRemember: the journey of a thousand miles begins with a single step. What's your biggest lesson this year? Let's discuss in the comments! 👇`],
+        ['Marco', '@marco_cooks', `Tried the no-knead bread thing everyone's been posting. First loaf was a brick, honestly could've used it as a doorstop. Second one I let it sit 18 hours instead of 12 and used way more water than the recipe said, and it actually came out with those big holes. My kid ate half of it before dinner which I'm counting as a win.`],
+        ['TechForward', '@techforward_ai', `Artificial intelligence is not just a tool — it's a transformative force reshaping every facet of our lives. From healthcare to education, AI is unlocking unprecedented opportunities for innovation and growth. However, with great power comes great responsibility. It is crucial that we navigate this evolving landscape thoughtfully, ensuring that ethical considerations remain at the forefront. By fostering collaboration between stakeholders, we can harness the full potential of AI while mitigating its risks. The future is bright, and together, we can build it.`],
+        ['Priya', '@priyap', `Moving apartments update: the elevator is broken, we're on the 4th floor, and I have apparently owned 11 boxes of books this whole time without noticing. my brother quit after box 6. my landlord said the elevator guy comes "sometime thursday" which is not a time. ordering pizza and giving up for the day`],
+        ['Mindful Leader', '@mindfulleader', `Leadership isn't about titles. It's about impact. 💡\n\nI once had a manager who taught me something profound: true leaders don't create followers — they create more leaders. That lesson has stayed with me throughout my career, shaping how I approach every interaction, every challenge, and every opportunity.\n\nThe best leaders listen more than they speak. They empower rather than control. They lead with empathy, integrity, and purpose.\n\nAgree? ♻️ Repost to inspire your network.`],
+        ['sam', '@samtheplumber', `pro tip from someone who does this for a living: if your toilet runs every 20 min on its own its almost always the flapper. $6 part. take a picture of the old one before you go to the hardware store because there are like 4 kinds and the guy at the counter will not know which one you need.`],
+        ['Future Ready', '@future_ready', `Unlocking your potential starts with a single decision: to show up every day as the best version of yourself. In a world full of distractions, focus is a superpower. Prioritize what truly matters, set clear boundaries, and invest in habits that compound over time. Small, consistent actions lead to extraordinary results. Remember, it's not about perfection — it's about progress. Keep pushing forward, stay curious, and never underestimate the power of a growth mindset.`],
+      ];
+      const feed = document.getElementById('feed');
+      // Repeat the set so there's something to scroll through.
+      for (let r = 0; r < 3; r++) {
+        for (const [name, handle, text] of posts) {
+          const a = document.createElement('article');
+          a.setAttribute('data-slopless-demo-post', '');
+          a.innerHTML = `<div class="who"></div><div class="demo-text"></div>`;
+          a.querySelector('.who').append(name + ' ', Object.assign(document.createElement('span'), { className: 'handle', textContent: handle }));
+          a.querySelector('.demo-text').textContent = r ? text + ` (#${r + 1})` : text;
+          feed.append(a);
+        }
+      }
+    </script>
+  </body>
+</html>

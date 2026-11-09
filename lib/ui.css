@@ -1,0 +1,38 @@
+:root {
+  --bg: #fbfaf8; --panel: #ffffff; --text: #1d1c22; --muted: #6b6a75; --line: #e6e3de;
+  --accent: #5b4fd6; --accent-soft: #ecebfb; --ok: #1d6b34; --warn: #9b1c15;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16151a; --panel: #1f1e25; --text: #ecebf1; --muted: #9b9aa6; --line: #2f2e37;
+    --accent: #a99ef7; --accent-soft: #2a2747; --ok: #8fd6a3; --warn: #ff9f97;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+h1 { font-size: 16px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 12px; margin: 0 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
+.seg button { all: unset; text-align: center; padding: 7px 4px; border-radius: 7px; cursor: pointer; font-weight: 550; font-size: 13px; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.seg button:focus-visible { outline: 2px solid var(--accent); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+label.row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; }
+input[type=text], input[type=password], input[type=number], select, textarea {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
+}
+textarea { width: 100%; min-height: 110px; resize: vertical; }
+button.btn { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: #fff; cursor: pointer; }
+button.btn.secondary { background: var(--accent-soft); color: var(--accent); }
+button.btn:disabled { opacity: 0.5; cursor: default; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+.dot.ok { background: var(--ok); }
+.dot.bad { background: var(--warn); }
+a { color: var(--accent); }
+code { font-size: 12px; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }

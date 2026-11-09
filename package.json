@@ -1,0 +1,28 @@
+{
+  "name": "slopless",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Flags, hides, or rewrites AI-generated posts in your feed. On-device detection with Open Pangram, or the Pangram API.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node scripts/copy-ort.mjs && wxt prepare",
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox --mv3",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox --mv3",
+    "build:all": "wxt build && wxt build -b firefox --mv3 && wxt build -b edge",
+    "zip": "wxt zip && wxt zip -b firefox --mv3",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "demo": "node scripts/serve-demo.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.58",
+    "typescript": "^5.9.3",
+    "wxt": "^0.21.5"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2"
+  }
+}
